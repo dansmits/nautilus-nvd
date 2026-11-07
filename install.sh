@@ -8,7 +8,7 @@
 #   4. adds the same certificates + the OpenSC CAC module to Chrome's certificate database
 #   5. installs the launcher and a desktop shortcut for each connection file you give it
 #
-# Usage:  ./install.sh [--rdp FILE.rdpw ...]   (files are downloaded from the Nautilus portal)
+# Usage:  ./install.sh [--rdp FILE.rdp ...]   (see README for how to get the file)
 # Run as your normal user, not with sudo. It asks for your password when needed. Safe to re-run.
 set -euo pipefail
 
@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 for f in "$KIT"/connections/*.rdp "$KIT"/connections/*.rdpw; do [ -f "$f" ] && RDPS+=("$f"); done
-[ "${#RDPS[@]}" -gt 0 ] || warn "No connection files given. Re-run with --rdp FILE.rdpw (see README), or later run: nautilus-add-connection FILE.rdpw"
+[ "${#RDPS[@]}" -gt 0 ] || warn "No connection files given. Re-run with --rdp FILE.rdp (see README), or later run: nautilus-add-connection FILE.rdp"
 
 # --- 1. Packages -----------------------------------------------------------
 say "Installing packages (needs your password)"

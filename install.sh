@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 for f in "$KIT"/connections/*.rdp "$KIT"/connections/*.rdpw; do [ -f "$f" ] && RDPS+=("$f"); done
-[ "${#RDPS[@]}" -gt 0 ] || warn "No connection files given. Re-run with --rdp FILE.rdpw (from the Nautilus portal), or later run: nautilus-add-connection FILE.rdpw"
+[ "${#RDPS[@]}" -gt 0 ] || warn "No connection files given. Re-run with --rdp FILE.rdpw (see README), or later run: nautilus-add-connection FILE.rdpw"
 
 # --- 1. Packages -----------------------------------------------------------
 say "Installing packages (needs your password)"

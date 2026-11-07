@@ -9,14 +9,24 @@ with the options NVD needs, and wires up Chrome, the DoD certificates and deskto
 ## Before you start
 - A CAC reader plugged in, with your CAC inserted
 - **Google Chrome** installed and set as the default browser (https://www.google.com/chrome)
-- Your connection file(s) from the Nautilus portal (they end in `.rdpw`). They identify your
-  organization's host pool, so this repo does not include them.
+- Your NVD connection file(s) (`.rdp`). They identify your organization's host pool, so this repo
+  does not include them. See **Get your NVD connection file** below.
+
+## Get your NVD connection file
+1. In Chrome, open the NVD web client. For Azure Government, the AVD web client is at
+   `https://rdweb.wvd.azure.us/arm/webclient/`. If NVD gave you a different link, use that one.
+2. Sign in with your CAC.
+3. Click the gear icon, then under *Resources launch method*, choose **Download the RDP file**.
+4. Click your NVD desktop. A `.rdp` file downloads (usually to `~/Downloads`).
+
+Repeat for each desktop you use (for example East and West). The installer also accepts files
+ending in `.rdpw`.
 
 ## Install
 ```bash
 git clone https://github.com/dansmits/nautilus-nvd.git
 cd nautilus-nvd
-./install.sh --rdp ~/Downloads/YourConnection.rdpw
+./install.sh --rdp ~/Downloads/YourConnection.rdp
 ```
 Run it as your normal user (not `sudo`); it asks for your password when needed. It takes several
 minutes because FreeRDP is compiled on your machine. It is safe to re-run.
@@ -25,7 +35,7 @@ Then quit Chrome completely, reopen it, insert your CAC and double-click the **N
 your desktop. On the Microsoft page enter your username first; Chrome then offers your *PIV
 Authentication* certificate. When Chrome asks to open "FreeRDP AAD redirect handler", click Open.
 
-Add more connections later with `nautilus-add-connection FILE.rdpw`.
+Add more connections later with `nautilus-add-connection FILE.rdp`.
 
 ## What it does
 | Step | Result |

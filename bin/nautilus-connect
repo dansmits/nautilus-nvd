@@ -1,0 +1,33 @@
+#!/bin/bash
+# Connect to a Navy Nautilus (Azure Virtual Desktop) host pool with CAC redirection.
+# Usage: nautilus-connect <connection.rdp> [extra xfreerdp options]
+#
+# Reads the Entra tenant from the .rdp file and picks the Azure Government or
+# commercial sign-in endpoints from its gateway address. The sign-in opens in the
+# default browser (should be Chrome, set up for the CAC) via FreeRDP's xdg helper.
+set -euo pipefail
+
+FREERDP=/opt/freerdp3
+rdp="${1:-}"
+if [ -z "$rdp" ] || [ ! -f "$rdp" ]; then
+  echo "usage: $(basename "$0") <connection.rdp> [xfreerdp options]" >&2
+  exit 1
+fi
+shift
+
+field() { tr -d '\r' < "$rdp" | sed -n "s/^$1:s://p" | head -1; }
+
+tenant="$(field aadtenantid)"
+gateway="$(field 'full address')"
+
+azure="auth-helper:$FREERDP/libexec/freerdp-xdg-aad-helper"
+if [ -n "$tenant" ]; then
+  azure="tenantid:$tenant,use-tenantid,$azure"
+fi
+case "$gateway" in
+  *.azure.us*|*.usgovcloudapi.net*)
+    azure="$azure,ad:login.microsoftonline.us,avd-scope:https%3A%2F%2Fwww.wvd.azure.us%2F.default%20openid%20profile%20offline_access"
+    ;;
+esac
+
+exec "$FREERDP/bin/xfreerdp" "$rdp" "/azure:$azure" /smartcard /dynamic-resolution "$@"

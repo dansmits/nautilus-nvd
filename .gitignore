@@ -1,0 +1,5 @@
+# Your connection files contain your organization's Azure IDs. Never commit them.
+connections/*
+!connections/.gitkeep
+*.rdp
+*.rdpw

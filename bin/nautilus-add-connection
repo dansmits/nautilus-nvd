@@ -1,0 +1,33 @@
+#!/bin/bash
+# Add Nautilus connections: nautilus-add-connection <file.rdp|file.rdpw>...
+# Copies each file to ~/Documents/Nautilus (as .rdp) and creates a menu + desktop shortcut.
+set -euo pipefail
+[ "$#" -gt 0 ] || { echo "usage: $(basename "$0") <file.rdp|file.rdpw>..." >&2; exit 1; }
+CONN="$HOME/Documents/Nautilus"
+APPS="$HOME/.local/share/applications"
+DESK="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+mkdir -p "$CONN" "$APPS" "$DESK"
+for src in "$@"; do
+  [ -f "$src" ] || { echo "not found: $src" >&2; continue; }
+  base="$(basename "$src")"; base="${base%.*}"
+  cp "$src" "$CONN/$base.rdp"
+  name="$(tr -d '\r' < "$src" | sed -n 's/^remotedesktopname:s://p' | head -1)"
+  name="${name:-$base}"
+  id="nautilus-$(echo "$base" | tr 'A-Z ' 'a-z-')"
+  cat > "$APPS/$id.desktop" <<EOT
+[Desktop Entry]
+Type=Application
+Name=Nautilus ${name%% *}
+Comment=Navy Nautilus Virtual Desktop ($name) with CAC
+Exec=/usr/local/bin/nautilus-connect "$CONN/$base.rdp"
+Icon=preferences-desktop-remote-desktop
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupNotify=false
+EOT
+  chmod +x "$APPS/$id.desktop"
+  cp "$APPS/$id.desktop" "$DESK/"
+  gio set "$DESK/$id.desktop" metadata::trusted true 2>/dev/null || true
+  echo "added: $name -> shortcut 'Nautilus ${name%% *}'"
+done
+update-desktop-database "$APPS" >/dev/null 2>&1 || true

@@ -4,11 +4,14 @@
 # Works on Debian-family systems (Ubuntu, Linux Mint, Debian, Pop!_OS...). It:
 #   1. installs the packages needed (smart card stack, NSS tools, build tools)
 #   2. builds FreeRDP from upstream source (signature-verified) into /opt/freerdp3
-#   3. adds the DoD PKI certificates to the system store
+#   3. downloads DISA's current "DoD PKI Only" certificate bundle, verifies it, and adds it to the
+#      system store (see bin/nautilus-fetch-certs for exactly what is checked)
 #   4. adds the same certificates + the OpenSC CAC module to Chrome's certificate database
 #   5. installs the launcher and a desktop shortcut for each connection file you give it
 #
-# Usage:  ./install.sh [--rdp FILE.rdp ...]   (see README for how to get the file)
+# Usage:  ./install.sh [--rdp FILE.rdp ...] [--certs <folder|bundle.zip|https-url>]
+#   --rdp    your NVD connection file(s); see README for how to get them
+#   --certs  use your own certificate source instead of DISA's bundle
 # Run as your normal user, not with sudo. It asks for your password when needed. Safe to re-run.
 set -euo pipefail
 
@@ -26,10 +29,14 @@ die()  { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo."
 command -v apt-get >/dev/null || die "This installer needs an apt-based system (Ubuntu, Mint, Debian). See README.md for other distributions."
 
-RDPS=()
+TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
+
+RDPS=(); CERTS_SRC=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --rdp) shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do RDPS+=("$1"); shift; done ;;
+    --rdp)   shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do RDPS+=("$1"); shift; done ;;
+    --certs) [ $# -ge 2 ] || die "--certs needs a folder, .zip file or https URL"; CERTS_SRC="$2"; shift 2 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
 done
@@ -50,6 +57,12 @@ sudo apt-get install -y \
   libxcursor-dev libxkbfile-dev libxv-dev libxtst-dev libxkbcommon-dev
 sudo systemctl enable --now pcscd.socket >/dev/null 2>&1 || true
 
+# --- 1b. DoD certificates: download and verify (before the long build, so problems show up early) --
+say "Fetching and verifying the DoD PKI certificates"
+CERTDIR="$TMPROOT/certs"
+"$KIT/bin/nautilus-fetch-certs" "$CERTDIR" ${CERTS_SRC:+"$CERTS_SRC"} \
+  || die "Could not get verified DoD certificates. You can supply your own with --certs <folder|bundle.zip|https-url>."
+
 # --- 2. FreeRDP ------------------------------------------------------------
 have_freerdp() {
   [ -x "$PREFIX/bin/xfreerdp" ] || return 1
@@ -60,7 +73,7 @@ if have_freerdp; then
   say "FreeRDP $FREERDP_VERSION already installed in $PREFIX"
 else
   say "Building FreeRDP $FREERDP_VERSION (takes a few minutes)"
-  WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+  WORK="$TMPROOT/freerdp"; mkdir -p "$WORK"
   BASE="https://github.com/FreeRDP/FreeRDP/releases/download/$FREERDP_VERSION"
   curl -fsSL -o "$WORK/src.tar.gz"     "$BASE/freerdp-$FREERDP_VERSION.tar.gz"
   curl -fsSL -o "$WORK/src.tar.gz.asc" "$BASE/freerdp-$FREERDP_VERSION.tar.gz.asc"
@@ -98,7 +111,8 @@ sudo install -m 755 "$KIT/bin/nautilus-add-connection" /usr/local/bin/nautilus-a
 # --- 3. DoD certificates: system store ---------------------------------------
 say "Adding DoD certificates to the system trust store"
 sudo mkdir -p /usr/local/share/ca-certificates/dod
-sudo cp "$KIT"/certs/*.crt /usr/local/share/ca-certificates/dod/
+sudo rm -f /usr/local/share/ca-certificates/dod/*.crt   # drop certificates from an older bundle
+sudo cp "$CERTDIR"/*.crt /usr/local/share/ca-certificates/dod/
 sudo update-ca-certificates >/dev/null
 
 # --- 4. Chrome (NSS): DoD certificates + OpenSC CAC module ---------------------
@@ -107,10 +121,14 @@ DB="sql:$HOME/.pki/nssdb"
 mkdir -p "$HOME/.pki/nssdb"
 [ -f "$HOME/.pki/nssdb/cert9.db" ] || certutil -N -d "$DB" --empty-password
 echo "  importing certificates (each takes a moment if a CAC is inserted)..."
-for f in "$KIT"/certs/*.crt; do
+for f in "$CERTDIR"/*.crt; do
   cn="$(openssl x509 -in "$f" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p')"
   case "$cn" in "DoD Root CA "*) trust="CT,C,C" ;; *) trust=",," ;; esac
-  certutil -d "$DB" -A -t "$trust" -n "$cn" -i "$f"
+  if certutil -d "$DB" -L -n "$cn" >/dev/null 2>&1; then
+    certutil -d "$DB" -M -t "$trust" -n "$cn"          # already there: just make sure the trust flags are right
+  else
+    certutil -d "$DB" -A -t "$trust" -n "$cn" -i "$f"
+  fi
 done
 OPENSC=""
 for p in /usr/lib/*/pkcs11/opensc-pkcs11.so /usr/lib64/pkcs11/opensc-pkcs11.so /usr/lib/pkcs11/opensc-pkcs11.so; do

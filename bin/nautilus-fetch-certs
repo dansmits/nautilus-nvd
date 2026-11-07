@@ -1,0 +1,135 @@
+#!/bin/bash
+# Fetch and VERIFY the DoD PKI CA certificates, writing one <name>.crt file per certificate.
+#
+# Usage: nautilus-fetch-certs <output-dir> [source]
+#   source (optional) is one of:
+#     (omitted)         DISA's current "PKCS#7 for DoD PKI Only" bundle from dl.dod.cyber.mil
+#     https://...zip    another URL serving a DISA-format bundle zip
+#     /path/bundle.zip  a DISA-format bundle zip you downloaded yourself
+#     /path/to/dir      a folder of your own .crt/.pem/.cer CA certificates
+#
+# A DISA bundle is accepted only if ALL of these hold:
+#   1. its signer chain starts with a self-signed "DoD Root CA" whose SHA-1 fingerprint is pinned below
+#   2. the signed checksum file (.sha256) verifies against that root, and every bundle file matches it
+#   3. every certificate in the bundle is a CA certificate under O=U.S. Government, OU=DoD, OU=PKI
+#      that chains to a pinned root (self-signed roots must themselves be pinned)
+# A folder of your own certificates is NOT verified this way: you are choosing what to trust.
+set -euo pipefail
+
+DEFAULT_URL="https://dl.dod.cyber.mil/wp-content/uploads/pki-pke/zip/unclass-certificates_pkcs7_DoD.zip"
+# SHA-1 fingerprints of the DoD roots. Root CA 6 matches the value DISA documents in the bundle
+# README (also published at https://crl.disa.mil). If DoD issues a new root, add it here.
+PINNED_ROOTS="
+D37ECF61C0B4ED88681EF3630C4E2FC787B37AEF
+4ECB5CC3095670454DA1CBD410FC921F46B8564B
+B8269F25DBD937ECAFD4C35A9838571723F2D026
+D73CA91102A2204A36459ED32213B467D7CE97FB
+"
+
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+note() { printf '  %s\n' "$*"; }
+
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "usage: $(basename "$0") <output-dir> [url|bundle.zip|folder]"
+OUT="$1"; SRC="${2:-$DEFAULT_URL}"
+for t in openssl curl python3 awk sha256sum; do command -v "$t" >/dev/null || die "missing tool: $t"; done
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$OUT"; [ -z "$(ls -A "$OUT" 2>/dev/null)" ] || die "output dir $OUT must be empty"
+
+fp()    { openssl x509 -in "$1" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g'; }
+cn()    { openssl x509 -in "$1" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p'; }
+is_ca() { openssl x509 -in "$1" -noout -ext basicConstraints 2>/dev/null | grep -q 'CA:TRUE'; }
+selfsigned() { [ "$(openssl x509 -in "$1" -noout -subject_hash)" = "$(openssl x509 -in "$1" -noout -issuer_hash)" ] \
+                 && openssl verify -CAfile "$1" "$1" >/dev/null 2>&1; }
+pinned() { printf '%s\n' "$PINNED_ROOTS" | grep -qx "$1"; }
+save()  { # save <pem> -> OUT/<sanitized CN>.crt
+  local name; name="$(cn "$1" | tr -c 'A-Za-z0-9._\n-' '_' | tr -s '_')"
+  [ -n "$name" ] || die "certificate without a common name"
+  [ ! -e "$OUT/$name.crt" ] || name="${name}_$(fp "$1" | cut -c1-8)"
+  openssl x509 -in "$1" -out "$OUT/$name.crt"
+}
+
+# ---- folder of the user's own certificates ----------------------------------------
+if [ -d "$SRC" ]; then
+  n=0
+  for f in "$SRC"/*.crt "$SRC"/*.pem "$SRC"/*.cer; do
+    [ -f "$f" ] || continue
+    grep -q 'PRIVATE KEY' "$f" && die "$f contains a private key; refusing to use it"
+    if openssl x509 -in "$f" -out "$TMP/c.pem" 2>/dev/null; then :;
+    elif openssl x509 -inform DER -in "$f" -out "$TMP/c.pem" 2>/dev/null; then :;
+    else die "$f is not an X.509 certificate"; fi
+    is_ca "$TMP/c.pem" || die "$f is not a CA certificate (end-entity/personal certificates are not allowed)"
+    save "$TMP/c.pem"; n=$((n+1))
+    selfsigned "$TMP/c.pem" && note "root: $(cn "$TMP/c.pem")  SHA-1 $(fp "$TMP/c.pem")"
+  done
+  [ "$n" -gt 0 ] || die "no certificates found in $SRC"
+  note "WARNING: $n certificates from your own folder were NOT verified by this script."
+  exit 0
+fi
+
+# ---- a DISA-format bundle zip -------------------------------------------------
+ZIP="$TMP/bundle.zip"
+case "$SRC" in
+  https://*) note "downloading $SRC"; curl -fsSL -m 180 -A "Mozilla/5.0" -o "$ZIP" "$SRC" || die "download failed" ;;
+  http://*)  die "refusing a non-HTTPS URL" ;;
+  *.zip)     [ -f "$SRC" ] || die "file not found: $SRC"; cp "$SRC" "$ZIP" ;;
+  *)         die "source must be an https URL, a .zip file or a folder: $SRC" ;;
+esac
+
+X="$TMP/x"; mkdir "$X"
+python3 -I - "$ZIP" "$X" <<'EOF' || die "bad or unsafe zip file"
+import os, sys, zipfile
+z, dest = zipfile.ZipFile(sys.argv[1]), os.path.realpath(sys.argv[2])
+if len(z.infolist()) > 200 or sum(i.file_size for i in z.infolist()) > 50_000_000: raise SystemExit(1)
+for i in z.infolist():
+    p = os.path.realpath(os.path.join(dest, i.filename))
+    if not (p == dest or p.startswith(dest + os.sep)): raise SystemExit(1)
+z.extractall(dest)
+EOF
+B="$(dirname "$(find "$X" -name 'DoD_PKE_CA_chain.pem' | head -1)")"
+[ -f "$B/DoD_PKE_CA_chain.pem" ] || die "not a DISA bundle: DoD_PKE_CA_chain.pem missing"
+SUMFILE="$(ls "$B"/*.sha256 2>/dev/null | head -1)"; P7B="$(ls "$B"/*.pem.p7b 2>/dev/null | head -1)"
+[ -n "$SUMFILE" ] && [ -n "$P7B" ] || die "not a DISA bundle: checksum file or .pem.p7b missing"
+case "$(basename "$SUMFILE")" in *_DoD.sha256) ;; *) die "this is not the 'DoD PKI Only' bundle ($(basename "$SUMFILE")); refusing (WCF/ECA/JITC bundles are not for this use)" ;; esac
+
+# 1. signer root: first cert in the chain must be a self-signed, pinned DoD root
+awk '/BEGIN CERTIFICATE/{n++} n==1' "$B/DoD_PKE_CA_chain.pem" > "$TMP/signer_root.pem"
+openssl x509 -in "$TMP/signer_root.pem" -noout >/dev/null 2>&1 || die "unreadable signer root"
+selfsigned "$TMP/signer_root.pem" || die "first certificate in the signer chain is not a self-signed root"
+pinned "$(fp "$TMP/signer_root.pem")" || die "signer root $(cn "$TMP/signer_root.pem") (SHA-1 $(fp "$TMP/signer_root.pem")) is not a pinned DoD root. Not trusting this bundle."
+[ "$(grep -c 'BEGIN CERTIFICATE' "$B/DoD_PKE_CA_chain.pem")" -eq 2 ] || die "signer chain must contain exactly a root and one subordinate CA"
+note "signer root: $(cn "$TMP/signer_root.pem") (pinned SHA-1 $(fp "$TMP/signer_root.pem"))"
+
+# 2. signed checksum file: trust ONLY the pinned root; the subordinate is merely an intermediate
+openssl smime -verify -in "$SUMFILE" -inform DER -CAfile "$TMP/signer_root.pem" -certfile "$B/DoD_PKE_CA_chain.pem" \
+  -out "$TMP/sums.raw" >/dev/null 2>"$TMP/smime.err" || { cat "$TMP/smime.err" >&2; die "signature on the checksum file did NOT verify"; }
+tr -d '\r' < "$TMP/sums.raw" > "$TMP/sums.txt"   # DISA's list uses CRLF line endings
+grep -qF "$(basename "$P7B")" "$TMP/sums.txt" || die "checksum file does not cover the certificate bundle"
+( cd "$B" && sha256sum --quiet -c "$TMP/sums.txt" ) || die "a bundle file does not match its signed checksum"
+note "signature and file checksums OK"
+
+# 3. split the bundle and check every certificate
+mkdir "$TMP/split"
+openssl pkcs7 -in "$P7B" -print_certs | awk -v d="$TMP/split" '/BEGIN CERTIFICATE/{n++; f=sprintf("%s/c%03d.pem",d,n)} f{print > f} /END CERTIFICATE/{f=""}'
+ls "$TMP/split"/c*.pem >/dev/null 2>&1 || die "no certificates found in the bundle"
+cat "$TMP/split"/c*.pem > "$TMP/all.pem"
+: > "$TMP/roots.pem"
+for c in "$TMP/split"/c*.pem; do
+  if selfsigned "$c"; then
+    pinned "$(fp "$c")" || die "bundle contains a self-signed root that is not pinned: $(cn "$c") (SHA-1 $(fp "$c")). Update PINNED_ROOTS only after verifying it at https://crl.disa.mil."
+    cat "$c" >> "$TMP/roots.pem"
+  fi
+done
+n=0
+for c in "$TMP/split"/c*.pem; do
+  # -no_check_time: DISA keeps some expired intermediates in the bundle; the signature chain is what matters.
+  is_ca "$c" || die "non-CA certificate in bundle: $(cn "$c")"
+  s="$(openssl x509 -in "$c" -noout -subject -nameopt multiline)"
+  for want in "organizationName *= U.S. Government" "organizationalUnitName *= DoD" "organizationalUnitName *= PKI"; do
+    printf '%s\n' "$s" | grep -qE "$want" || die "unexpected certificate subject (not DoD PKI): $(cn "$c")"
+  done
+  openssl verify -no_check_time -CAfile "$TMP/roots.pem" -untrusted "$TMP/all.pem" "$c" >/dev/null 2>&1 \
+    || die "certificate does not chain to a pinned DoD root: $(cn "$c")"
+  save "$c"; n=$((n+1))
+done
+note "$n certificates verified and written to $OUT"

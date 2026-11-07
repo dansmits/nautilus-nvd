@@ -3,7 +3,7 @@
 `install.sh` handles apt-based systems. On any other distribution, reproduce its steps by hand:
 install pcscd + OpenSC + NSS tools; build FreeRDP 3 (`WITH_AAD=ON`, `WITH_XDG_AAD_AUTH_HELPER=ON`,
 `WITH_PCSC=ON`, prefix `/opt/freerdp3`, verify the source signature against the fingerprint in
-`install.sh`); add `certs/*.crt` to the system store and to `sql:$HOME/.pki/nssdb` (roots `CT,C,C`,
+`install.sh`); run `bin/nautilus-fetch-certs <dir>` (downloads and verifies DISA's DoD PKI Only bundle; `--certs` in install.sh passes your own source), then add the `.crt` files from that dir to the system store and to `sql:$HOME/.pki/nssdb` (roots `CT,C,C`,
 others `,,`); register OpenSC with `modutil`; install `bin/*`; add connections with
 `nautilus-add-connection`. Check a build with
 `xfreerdp +buildconfig | tr ' ' '\n' | grep -E 'XDG_AAD|WITH_AAD=|WITH_PCSC='`.

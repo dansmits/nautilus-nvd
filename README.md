@@ -43,10 +43,31 @@ Add more connections later with `nautilus-add-connection FILE.rdp`.
 | Packages | `pcscd`, OpenSC, NSS tools and the build dependencies, via apt |
 | FreeRDP | 3.33.0 built from the upstream release into `/opt/freerdp3`. The source's GPG signature must match the maintainer key `7703 B333 420E 0AEF 995E B4B3 A494 54A3 FC90 9FD5` or the build is refused |
 | DoD certificates | Downloaded fresh from DISA each time you run the installer (see below), then added to the system store and Chrome's database (`~/.pki/nssdb`), plus the OpenSC CAC module |
-| Launcher | `/usr/local/bin/nautilus-connect`, which sets the Azure Government sign-in options |
+| Launcher | `/usr/local/bin/nautilus-connect`, which sets the Azure Government sign-in options and redirects your headset, microphone and webcam |
 
 Only apt-based systems (Ubuntu, Mint, Debian) are supported by the script. On Fedora or Arch, follow
 the same steps by hand; see `CLAUDE.md`.
+
+## Headset, microphone and webcam
+`nautilus-connect` redirects these automatically; there is nothing to configure.
+- **Headset and microphone**: your default audio devices are redirected (`/sound:sys:pulse
+  /microphone:sys:pulse`, which also covers PipeWire). Set your headset as the default input and
+  output in your sound settings before you connect. In the session it appears as *Remote Audio*.
+- **Webcam**: any Video4Linux camera (`/dev/video*`) is redirected through FreeRDP's camera channel
+  (`/dvc:rdpecam,sys:v4l`). Check it is detected locally with `ls /dev/video*`. If the camera is a
+  monitor-attached or USB hub camera and does not show up, fix that first (check `lsusb`).
+- These are standard audio and camera redirection, not raw USB passthrough, so they work with any
+  headset or webcam Linux can already see.
+
+Opt out with `NAUTILUS_NO_AUDIO=1` or `NAUTILUS_NO_CAMERA=1` in the environment, for example
+`NAUTILUS_NO_CAMERA=1 nautilus-connect FILE.rdp`. Options you add on the command line come last and
+override the defaults.
+
+The camera only appears if your host pool allows it: camera redirection is controlled by your
+organization's Azure Virtual Desktop settings, so it may be disabled for you.
+
+**Upgrading:** re-run `./install.sh`. It detects a FreeRDP built without camera support and rebuilds
+it (a few minutes), then updates the launcher.
 
 ## DoD certificates: where they come from and how they're checked
 The installer downloads DISA's **"PKI CA Certificate Bundles: PKCS#7 for DoD PKI Only"** from

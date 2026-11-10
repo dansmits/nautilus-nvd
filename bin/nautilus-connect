@@ -5,6 +5,10 @@
 # Reads the Entra tenant from the .rdp file and picks the Azure Government or
 # commercial sign-in endpoints from its gateway address. The sign-in opens in the
 # default browser (should be Chrome, set up for the CAC) via FreeRDP's xdg helper.
+#
+# Also redirects your headset/microphone (PulseAudio/PipeWire) and any webcam (Video4Linux).
+# Opt out with NAUTILUS_NO_AUDIO=1 or NAUTILUS_NO_CAMERA=1 in the environment. Options you pass on
+# the command line come last, so they override these defaults.
 set -euo pipefail
 
 FREERDP=/opt/freerdp3
@@ -30,4 +34,15 @@ case "$gateway" in
     ;;
 esac
 
-exec "$FREERDP/bin/xfreerdp" "$rdp" "/azure:$azure" /smartcard /dynamic-resolution "$@"
+extra=()
+if [ -z "${NAUTILUS_NO_AUDIO:-}" ]; then
+  extra+=(/sound:sys:pulse /microphone:sys:pulse)
+fi
+# Camera: only when a video device exists and this FreeRDP build has the camera channel.
+if [ -z "${NAUTILUS_NO_CAMERA:-}" ] && compgen -G "/dev/video*" >/dev/null \
+   && "$FREERDP/bin/xfreerdp" /help 2>&1 | grep -q 'dvc:rdpecam'; then
+  extra+=(/dvc:rdpecam,sys:v4l)
+fi
+
+exec "$FREERDP/bin/xfreerdp" "$rdp" "/azure:$azure" /smartcard /dynamic-resolution \
+  ${extra[@]+"${extra[@]}"} "$@"

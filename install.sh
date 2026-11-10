@@ -7,7 +7,8 @@
 #   3. downloads DISA's current "DoD PKI Only" certificate bundle, verifies it, and adds it to the
 #      system store (see bin/nautilus-fetch-certs for exactly what is checked)
 #   4. adds the same certificates + the OpenSC CAC module to Chrome's certificate database
-#   5. installs the launcher and a desktop shortcut for each connection file you give it
+#   5. installs the launcher (headset, microphone and webcam are redirected automatically)
+#      and a desktop shortcut for each connection file you give it
 #
 # Usage:  ./install.sh [--rdp FILE.rdp ...] [--certs <folder|bundle.zip|https-url>]
 #   --rdp    your NVD connection file(s); see README for how to get them
@@ -36,7 +37,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --rdp)   shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do RDPS+=("$1"); shift; done ;;
     --certs) [ $# -ge 2 ] || die "--certs needs a folder, .zip file or https URL"; CERTS_SRC="$2"; shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
 done
@@ -52,7 +53,7 @@ sudo apt-get install -y \
   build-essential cmake ninja-build pkg-config \
   libssl-dev libkrb5-dev libpcsclite-dev libcjson-dev liburiparser-dev libicu-dev \
   libavcodec-dev libavutil-dev libswscale-dev libswresample-dev \
-  libpulse-dev libasound2-dev libcups2-dev libusb-1.0-0-dev libudev-dev libsystemd-dev uuid-dev zlib1g-dev \
+  libpulse-dev libasound2-dev libv4l-dev libcups2-dev libusb-1.0-0-dev libudev-dev libsystemd-dev uuid-dev zlib1g-dev \
   libx11-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev libxrandr-dev libxinerama-dev \
   libxcursor-dev libxkbfile-dev libxv-dev libxtst-dev libxkbcommon-dev
 sudo systemctl enable --now pcscd.socket >/dev/null 2>&1 || true
@@ -68,6 +69,7 @@ have_freerdp() {
   [ -x "$PREFIX/bin/xfreerdp" ] || return 1
   "$PREFIX/bin/xfreerdp" --version 2>&1 | grep -q "version $FREERDP_VERSION" || return 1
   "$PREFIX/bin/xfreerdp" +buildconfig 2>&1 | tr ' ' '\n' | grep -q '^WITH_XDG_AAD_AUTH_HELPER=ON$' || return 1
+  "$PREFIX/bin/xfreerdp" /help 2>&1 | grep -q 'dvc:rdpecam' || return 1   # webcam redirection built in
 }
 if have_freerdp; then
   say "FreeRDP $FREERDP_VERSION already installed in $PREFIX"
@@ -96,7 +98,7 @@ else
     -DWITH_PCSC=ON -DWITH_SMARTCARD_PCSC=ON -DWITH_PKCS11=ON -DWITH_KRB5=ON \
     -DWITH_FFMPEG=ON -DWITH_DSP_FFMPEG=ON -DWITH_SWSCALE=ON -DWITH_VIDEO_FFMPEG=ON \
     -DWITH_PULSE=ON -DWITH_ALSA=ON -DWITH_CUPS=ON -DWITH_FUSE=OFF -DWITH_CAIRO=OFF -DWITH_MANPAGES=OFF \
-    -DWITH_OPUS=OFF -DWITH_JPEG=OFF -DWITH_SDL_IMAGE_DIALOGS=OFF -DCHANNEL_RDPECAM_CLIENT=OFF \
+    -DWITH_OPUS=OFF -DWITH_JPEG=OFF -DWITH_SDL_IMAGE_DIALOGS=OFF -DCHANNEL_RDPECAM_CLIENT=ON \
     -DWITH_CJSON_REQUIRED=ON -DWITH_URIPARSER=ON -DBUILD_TESTING=OFF >/dev/null
   ninja -C "$WORK/build" -j"$(nproc)"
   DESTDIR="$WORK/stage" ninja -C "$WORK/build" install >/dev/null

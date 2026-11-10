@@ -18,8 +18,19 @@ which fails for NVD. `nautilus-connect` builds these options from the `.rdp` fil
 ```
 /azure:tenantid:<aadtenantid from .rdp>,use-tenantid,ad:login.microsoftonline.us,avd-scope:https%3A%2F%2Fwww.wvd.azure.us%2F.default%20openid%20profile%20offline_access,auth-helper:/opt/freerdp3/libexec/freerdp-xdg-aad-helper
 /smartcard /dynamic-resolution
+/sound:sys:pulse /microphone:sys:pulse        (unless NAUTILUS_NO_AUDIO)
+/dvc:rdpecam,sys:v4l                            (if /dev/video* exists and the build has it; unless NAUTILUS_NO_CAMERA)
 ```
 If FreeRDP's `/azure:` syntax changes in a newer release, check `xfreerdp /help` and update the launcher.
+
+## Headset and webcam
+- Redirected through audio and camera channels, **not** `/usb` (urbdrc): AVD hosts generally don't
+  support generic USB redirection, and `/smartcard` is a separate channel from it.
+- The camera option is `/dvc:rdpecam,sys:v4l`, **not** `/camera`. Without `device:` it enumerates
+  every V4L capture node. The build needs `libv4l-dev` and `-DCHANNEL_RDPECAM_CLIENT=ON`; check with
+  `xfreerdp /help | grep rdpecam`.
+- A webcam that is missing from `lsusb` and `/dev/video*` is a hardware/cabling problem (for example a
+  monitor's USB upstream cable or input), not a FreeRDP one.
 
 ## Pitfalls already hit (don't repeat them)
 - **Wrong DoD bundle**: DISA also publishes a **WCF** bundle ("WCF B&I PKI"), which contains DoD's

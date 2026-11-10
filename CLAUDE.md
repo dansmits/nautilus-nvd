@@ -35,7 +35,12 @@ If FreeRDP's `/azure:` syntax changes in a newer release, check `xfreerdp /help`
 - **Camera is opt-in** because FreeRDP 3.33.0 aborts (WINPR_ASSERT in `Stream_ResetPosition`, from
   `ecam_dev_send_pending`) when the guest stops/restarts the stream: stop frees `sampleRespBuffer` and
   `pendingSample` while a frame request is still arriving. Preceded by `Streaming already in progress`
-  errors in `~/.xsession-errors`. Re-enable by default once an upstream fix ships.
+  errors in `~/.xsession-errors`. `patches/freerdp-3.33.0-rdpecam-stop-stream.patch` (applied by install.sh) guards those paths: no frame
+  is sent without buffers, sample requests for a stopped stream are ignored, stop clears stale state.
+  Tested once in Teams (stream ran, no abort); a *separate* session drop was seen from a failed
+  `Cached Pointer` fastpath update (X11 cursor), unrelated to the camera. install.sh records the patch
+  checksum in `/opt/freerdp3/.nautilus-patches` and rebuilds when it differs. Make the camera default-on
+  once it has had more testing or upstream ships a fix.
 
 ## Pitfalls already hit (don't repeat them)
 - **Wrong DoD bundle**: DISA also publishes a **WCF** bundle ("WCF B&I PKI"), which contains DoD's

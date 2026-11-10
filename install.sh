@@ -21,6 +21,10 @@ FREERDP_VERSION=3.33.0
 # rejected unless it is signed by exactly this key.
 FREERDP_KEY_FPR=7703B333420E0AEF995EB4B3A49454A3FC909FD5
 PREFIX=/opt/freerdp3
+# Local fixes applied to the FreeRDP source (see patches/). A checksum of them is stored in the install
+# so an older build without the fixes is detected and rebuilt.
+PATCHES=("$(cd "$(dirname "$0")" && pwd)"/patches/*.patch)
+PATCH_ID="$(cat "${PATCHES[@]}" | sha256sum | cut -d' ' -f1)"
 
 KIT="$(cd "$(dirname "$0")" && pwd)"
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -50,7 +54,7 @@ sudo apt-get update || warn "apt update reported errors (often an unrelated repo
 sudo apt-get install -y \
   pcscd opensc opensc-pkcs11 libnss3-tools pcsc-tools openssl ca-certificates curl gnupg \
   python3 xdg-utils desktop-file-utils \
-  build-essential cmake ninja-build pkg-config \
+  build-essential cmake ninja-build pkg-config patch \
   libssl-dev libkrb5-dev libpcsclite-dev libcjson-dev liburiparser-dev libicu-dev \
   libavcodec-dev libavutil-dev libswscale-dev libswresample-dev \
   libpulse-dev libasound2-dev libv4l-dev libcups2-dev libusb-1.0-0-dev libudev-dev libsystemd-dev uuid-dev zlib1g-dev \
@@ -70,6 +74,7 @@ have_freerdp() {
   "$PREFIX/bin/xfreerdp" --version 2>&1 | grep -q "version $FREERDP_VERSION" || return 1
   "$PREFIX/bin/xfreerdp" +buildconfig 2>&1 | tr ' ' '\n' | grep -q '^WITH_XDG_AAD_AUTH_HELPER=ON$' || return 1
   "$PREFIX/bin/xfreerdp" /help 2>&1 | grep -q 'dvc:rdpecam' || return 1   # webcam redirection built in
+  [ "$(cat "$PREFIX/.nautilus-patches" 2>/dev/null)" = "$PATCH_ID" ] || return 1   # camera crash fix applied
 }
 if have_freerdp; then
   say "FreeRDP $FREERDP_VERSION already installed in $PREFIX"
@@ -89,6 +94,10 @@ else
   unset GNUPGHOME
   tar -xzf "$WORK/src.tar.gz" -C "$WORK"
   SRC="$WORK/freerdp-$FREERDP_VERSION"
+  for pf in "${PATCHES[@]}"; do
+    echo "  applying $(basename "$pf")"
+    patch -d "$SRC" -p1 --quiet < "$pf" || die "Could not apply $(basename "$pf") to the FreeRDP source."
+  done
   cmake -S "$SRC" -B "$WORK/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
     -DWITH_X11=ON -DWITH_CLIENT_SDL=OFF -DWITH_WAYLAND=OFF -DWITH_SERVER=OFF -DWITH_SHADOW=OFF \
@@ -105,6 +114,7 @@ else
   sudo rm -rf "$PREFIX"
   sudo cp -a "$WORK/stage$PREFIX" "$PREFIX"
   sudo chown -R root:root "$PREFIX"
+  echo "$PATCH_ID" | sudo tee "$PREFIX/.nautilus-patches" >/dev/null
   have_freerdp || die "FreeRDP was built but the xdg sign-in helper is missing from it."
 fi
 sudo install -m 755 "$KIT/bin/nautilus-connect"        /usr/local/bin/nautilus-connect

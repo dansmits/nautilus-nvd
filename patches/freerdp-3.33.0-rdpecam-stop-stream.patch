@@ -1,0 +1,56 @@
+--- a/channels/rdpecam/client/camera_device_main.c
++++ b/channels/rdpecam/client/camera_device_main.c
+@@ -197,6 +197,15 @@
+ 	WINPR_ASSERT(dev);
+ 	WINPR_ASSERT(stream);
+ 
++	/* The buffers are freed when a stream is stopped (or failed to start). A late sample request
++	 * or capture callback must not touch them. */
++	if (!stream->sampleRespBuffer || !stream->pendingSample)
++	{
++		WLog_DBG(TAG, "Frame dropped: stream buffers not available");
++		stream->haveSample = FALSE;
++		return CHANNEL_RC_OK;
++	}
++
+ 	if (stream->samplesRequested <= 0)
+ 	{
+ 		WLog_VRB(TAG, "Frame delayed: No sample requested");
+@@ -254,6 +263,12 @@
+ 
+ 	EnterCriticalSection(&stream->lock);
+ 	UINT ret = CHANNEL_RC_NO_MEMORY;
++	if (!stream->streaming || !stream->pendingSample || !stream->sampleRespBuffer)
++	{
++		WLog_DBG(TAG, "Frame drop: stream stopped");
++		ret = CHANNEL_RC_OK;
++		goto out;
++	}
+ 	if (dev->ihal->RequestDrivenCapture && (stream->samplesRequested <= 0))
+ 	{
+ 		/* The server requests samples one at a time, so the count is zero between
+@@ -346,6 +361,9 @@
+ 	Stream_Free(stream->pendingSample, TRUE);
+ 	stream->pendingSample = nullptr;
+ 
++	stream->haveSample = FALSE;
++	stream->samplesRequested = 0;
++
+ 	ecam_encoder_context_free(stream);
+ }
+ 
+@@ -577,6 +595,14 @@
+ 	BOOL startCapture = FALSE;
+ 	CAM_MEDIA_TYPE_DESCRIPTION mediaType = WINPR_C_ARRAY_INIT;
+ 
++	/* Start/stop requests arrive on this same thread, so this check cannot race with them. A
++	 * request for a stream that was stopped (or never started) has no lock or buffers to use. */
++	if (!stream->streaming)
++	{
++		WLog_DBG(TAG, "Sample request ignored: stream %u is not running", streamIndex);
++		return CHANNEL_RC_OK;
++	}
++
+ 	EnterCriticalSection(&stream->lock);
+ 
+ 	/* need to save channel because responses are asynchronous and coming from capture thread */

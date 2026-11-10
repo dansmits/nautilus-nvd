@@ -41,7 +41,7 @@ Add more connections later with `nautilus-add-connection FILE.rdp`.
 | Step | Result |
 |---|---|
 | Packages | `pcscd`, OpenSC, NSS tools and the build dependencies, via apt |
-| FreeRDP | 3.33.0 built from the upstream release into `/opt/freerdp3`. The source's GPG signature must match the maintainer key `7703 B333 420E 0AEF 995E B4B3 A494 54A3 FC90 9FD5` or the build is refused |
+| FreeRDP | 3.33.0 built from the upstream release (plus the small camera fix in `patches/`) into `/opt/freerdp3`. The source's GPG signature must match the maintainer key `7703 B333 420E 0AEF 995E B4B3 A494 54A3 FC90 9FD5` or the build is refused |
 | DoD certificates | Downloaded fresh from DISA each time you run the installer (see below), then added to the system store and Chrome's database (`~/.pki/nssdb`), plus the OpenSC CAC module |
 | Launcher | `/usr/local/bin/nautilus-connect`, which sets the Azure Government sign-in options and redirects your headset and microphone (webcam is opt-in) |
 
@@ -53,9 +53,11 @@ the same steps by hand; see `CLAUDE.md`.
   session (`/sound:sys:pulse /microphone:sys:pulse`, which also covers PipeWire). Set your headset as
   the default input and output in your sound settings before you connect. In the session it appears as
   *Remote Audio*. Opt out with `NAUTILUS_NO_AUDIO=1`.
-- **Webcam** redirection is built in but **off by default**. FreeRDP 3.33.0's camera channel can crash
-  the whole session when the remote app stops or restarts the camera (it aborts in
-  `ecam_dev_send_pending`). To try it anyway: `NAUTILUS_CAMERA=1 nautilus-connect FILE.rdp`. It
+- **Webcam** redirection is built in but **off by default** while it gets more testing. Stock FreeRDP
+  3.33.0's camera channel can crash the whole session when the remote app stops or restarts the
+  camera (it aborts in `ecam_dev_send_pending`). The installer applies a small fix
+  (`patches/freerdp-3.33.0-rdpecam-stop-stream.patch`) that has held up in Teams so far. To use the
+  camera: `NAUTILUS_CAMERA=1 nautilus-connect FILE.rdp`. It
   redirects any Video4Linux camera (`/dev/video*`; check with `ls /dev/video*`) through
   `/dvc:rdpecam,sys:v4l`. It only appears if your host pool allows camera redirection.
 - Both are standard audio and camera redirection, not raw USB passthrough, so they work with any

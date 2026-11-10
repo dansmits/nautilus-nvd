@@ -7,7 +7,7 @@
 #   3. downloads DISA's current "DoD PKI Only" certificate bundle, verifies it, and adds it to the
 #      system store (see bin/nautilus-fetch-certs for exactly what is checked)
 #   4. adds the same certificates + the OpenSC CAC module to Chrome's certificate database
-#   5. installs the launcher (headset, microphone and webcam are redirected automatically)
+#   5. installs the launcher (headset and microphone are redirected automatically; webcam is opt-in)
 #      and a desktop shortcut for each connection file you give it
 #
 # Usage:  ./install.sh [--rdp FILE.rdp ...] [--certs <folder|bundle.zip|https-url>]

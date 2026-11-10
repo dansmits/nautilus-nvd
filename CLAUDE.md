@@ -19,7 +19,7 @@ which fails for NVD. `nautilus-connect` builds these options from the `.rdp` fil
 /azure:tenantid:<aadtenantid from .rdp>,use-tenantid,ad:login.microsoftonline.us,avd-scope:https%3A%2F%2Fwww.wvd.azure.us%2F.default%20openid%20profile%20offline_access,auth-helper:/opt/freerdp3/libexec/freerdp-xdg-aad-helper
 /smartcard /dynamic-resolution
 /sound:sys:pulse /microphone:sys:pulse        (unless NAUTILUS_NO_AUDIO)
-/dvc:rdpecam,sys:v4l                            (if /dev/video* exists and the build has it; unless NAUTILUS_NO_CAMERA)
+/dvc:rdpecam,sys:v4l                            (only with NAUTILUS_CAMERA=1, if /dev/video* exists and the build has it)
 ```
 If FreeRDP's `/azure:` syntax changes in a newer release, check `xfreerdp /help` and update the launcher.
 
@@ -31,6 +31,11 @@ If FreeRDP's `/azure:` syntax changes in a newer release, check `xfreerdp /help`
   `xfreerdp /help | grep rdpecam`.
 - A webcam that is missing from `lsusb` and `/dev/video*` is a hardware/cabling problem (for example a
   monitor's USB upstream cable or input), not a FreeRDP one.
+
+- **Camera is opt-in** because FreeRDP 3.33.0 aborts (WINPR_ASSERT in `Stream_ResetPosition`, from
+  `ecam_dev_send_pending`) when the guest stops/restarts the stream: stop frees `sampleRespBuffer` and
+  `pendingSample` while a frame request is still arriving. Preceded by `Streaming already in progress`
+  errors in `~/.xsession-errors`. Re-enable by default once an upstream fix ships.
 
 ## Pitfalls already hit (don't repeat them)
 - **Wrong DoD bundle**: DISA also publishes a **WCF** bundle ("WCF B&I PKI"), which contains DoD's

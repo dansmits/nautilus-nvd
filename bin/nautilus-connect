@@ -6,9 +6,10 @@
 # commercial sign-in endpoints from its gateway address. The sign-in opens in the
 # default browser (should be Chrome, set up for the CAC) via FreeRDP's xdg helper.
 #
-# Also redirects your headset/microphone (PulseAudio/PipeWire) and any webcam (Video4Linux).
-# Opt out with NAUTILUS_NO_AUDIO=1 or NAUTILUS_NO_CAMERA=1 in the environment. Options you pass on
-# the command line come last, so they override these defaults.
+# Also redirects your headset/microphone (PulseAudio/PipeWire); opt out with NAUTILUS_NO_AUDIO=1.
+# Webcam (Video4Linux) redirection is OFF by default because FreeRDP 3.33.0 can crash when the remote
+# app stops the camera; turn it on with NAUTILUS_CAMERA=1. Options you pass on the command line
+# come last, so they override these defaults.
 set -euo pipefail
 
 FREERDP=/opt/freerdp3
@@ -38,8 +39,8 @@ extra=()
 if [ -z "${NAUTILUS_NO_AUDIO:-}" ]; then
   extra+=(/sound:sys:pulse /microphone:sys:pulse)
 fi
-# Camera: only when a video device exists and this FreeRDP build has the camera channel.
-if [ -z "${NAUTILUS_NO_CAMERA:-}" ] && compgen -G "/dev/video*" >/dev/null \
+# Camera (opt-in): only when a video device exists and this FreeRDP build has the camera channel.
+if [ -n "${NAUTILUS_CAMERA:-}" ] && compgen -G "/dev/video*" >/dev/null \
    && "$FREERDP/bin/xfreerdp" /help 2>&1 | grep -q 'dvc:rdpecam'; then
   extra+=(/dvc:rdpecam,sys:v4l)
 fi

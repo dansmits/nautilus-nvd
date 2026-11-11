@@ -27,12 +27,31 @@ PATCHES=("$(cd "$(dirname "$0")" && pwd)"/patches/*.patch)
 PATCH_ID="$(cat "${PATCHES[@]}" | sha256sum | cut -d' ' -f1)"
 
 KIT="$(cd "$(dirname "$0")" && pwd)"
-say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+# GUI mode (NAUTILUS_GUI=1, set by gui/nautilus-installer): progress is reported to the window as
+# lines starting with "##" (PLAN, STEP, NEED, CLEAR, DOWNLOAD, FOUND, DONE), and nothing waits on a terminal.
+GUI="${NAUTILUS_GUI:-}"
+ui()   { [ -z "$GUI" ] || printf '##%s\n' "$*"; }
+STEPNO=0
+say()  { STEPNO=$((STEPNO+1)); ui "STEP $STEPNO"; printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+NVD_URL=https://rdweb.wvd.azure.us/arm/webclient/
 warn() { printf '\033[33mWARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo."
 command -v apt-get >/dev/null || die "This installer needs an apt-based system (Ubuntu, Mint, Debian). See README.md for other distributions."
+
+# Graphical installer: used automatically when a desktop session and python3-gi (GTK 3) are available.
+# Force the terminal installer with --text.
+if [ -z "$GUI" ] && [[ " $* " != *" --text "* ]] && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] \
+   && python3 -c 'import gi; gi.require_version("Gtk","3.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+  exec python3 "$KIT/gui/nautilus-installer" "$0" "$@"
+fi
+if [ -n "$GUI" ]; then
+  export SUDO_ASKPASS="$KIT/gui/askpass"
+  SUDO=(sudo -A env DEBIAN_FRONTEND=noninteractive)
+else
+  SUDO=(sudo)
+fi
 
 TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
 
@@ -41,17 +60,22 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --rdp)   shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do RDPS+=("$1"); shift; done ;;
     --certs) [ $# -ge 2 ] || die "--certs needs a folder, .zip file or https URL"; CERTS_SRC="$2"; shift 2 ;;
+    --text|--gui) shift ;;
     -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
 done
-for f in "$KIT"/connections/*.rdp "$KIT"/connections/*.rdpw; do [ -f "$f" ] && RDPS+=("$f"); done
-[ "${#RDPS[@]}" -gt 0 ] || warn "No connection files given. Re-run with --rdp FILE.rdp (see README), or later run: nautilus-add-connection FILE.rdp"
+START_TS="$(date +%s)"   # connection files downloaded after this moment are picked up automatically
+
+PLAN="Install required software|Download and verify DoD certificates|Set up the remote desktop client|Trust the DoD certificates|Set up Chrome for your CAC"
+[ "${#RDPS[@]}" -gt 0 ] || PLAN="$PLAN|Check your CAC reader and card|Download your connection files"
+PLAN="$PLAN|Create desktop shortcuts"
+ui "PLAN $PLAN"
 
 # --- 1. Packages -----------------------------------------------------------
 say "Installing packages (needs your password)"
-sudo apt-get update || warn "apt update reported errors (often an unrelated repository); continuing."
-sudo apt-get install -y \
+"${SUDO[@]}" apt-get update || warn "apt update reported errors (often an unrelated repository); continuing."
+"${SUDO[@]}" apt-get install -y \
   pcscd opensc opensc-pkcs11 libnss3-tools pcsc-tools openssl ca-certificates curl gnupg \
   python3 xdg-utils desktop-file-utils \
   build-essential cmake ninja-build pkg-config patch \
@@ -60,7 +84,7 @@ sudo apt-get install -y \
   libpulse-dev libasound2-dev libv4l-dev libcups2-dev libusb-1.0-0-dev libudev-dev libsystemd-dev uuid-dev zlib1g-dev \
   libx11-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev libxrandr-dev libxinerama-dev \
   libxcursor-dev libxkbfile-dev libxv-dev libxtst-dev libxkbcommon-dev
-sudo systemctl enable --now pcscd.socket >/dev/null 2>&1 || true
+"${SUDO[@]}" systemctl enable --now pcscd.socket >/dev/null 2>&1 || true
 
 # --- 1b. DoD certificates: download and verify (before the long build, so problems show up early) --
 say "Fetching and verifying the DoD PKI certificates"
@@ -111,21 +135,21 @@ else
     -DWITH_CJSON_REQUIRED=ON -DWITH_URIPARSER=ON -DBUILD_TESTING=OFF >/dev/null
   ninja -C "$WORK/build" -j"$(nproc)"
   DESTDIR="$WORK/stage" ninja -C "$WORK/build" install >/dev/null
-  sudo rm -rf "$PREFIX"
-  sudo cp -a "$WORK/stage$PREFIX" "$PREFIX"
-  sudo chown -R root:root "$PREFIX"
-  echo "$PATCH_ID" | sudo tee "$PREFIX/.nautilus-patches" >/dev/null
+  "${SUDO[@]}" rm -rf "$PREFIX"
+  "${SUDO[@]}" cp -a "$WORK/stage$PREFIX" "$PREFIX"
+  "${SUDO[@]}" chown -R root:root "$PREFIX"
+  echo "$PATCH_ID" | "${SUDO[@]}" tee "$PREFIX/.nautilus-patches" >/dev/null
   have_freerdp || die "FreeRDP was built but the xdg sign-in helper is missing from it."
 fi
-sudo install -m 755 "$KIT/bin/nautilus-connect"        /usr/local/bin/nautilus-connect
-sudo install -m 755 "$KIT/bin/nautilus-add-connection" /usr/local/bin/nautilus-add-connection
+"${SUDO[@]}" install -m 755 "$KIT/bin/nautilus-connect"        /usr/local/bin/nautilus-connect
+"${SUDO[@]}" install -m 755 "$KIT/bin/nautilus-add-connection" /usr/local/bin/nautilus-add-connection
 
 # --- 3. DoD certificates: system store ---------------------------------------
 say "Adding DoD certificates to the system trust store"
-sudo mkdir -p /usr/local/share/ca-certificates/dod
-sudo rm -f /usr/local/share/ca-certificates/dod/*.crt   # drop certificates from an older bundle
-sudo cp "$CERTDIR"/*.crt /usr/local/share/ca-certificates/dod/
-sudo update-ca-certificates >/dev/null
+"${SUDO[@]}" mkdir -p /usr/local/share/ca-certificates/dod
+"${SUDO[@]}" rm -f /usr/local/share/ca-certificates/dod/*.crt   # drop certificates from an older bundle
+"${SUDO[@]}" cp "$CERTDIR"/*.crt /usr/local/share/ca-certificates/dod/
+"${SUDO[@]}" update-ca-certificates >/dev/null
 
 # --- 4. Chrome (NSS): DoD certificates + OpenSC CAC module ---------------------
 say "Setting up Chrome's certificate database (~/.pki/nssdb)"
@@ -143,25 +167,112 @@ for f in "$CERTDIR"/*.crt; do
   fi
 done
 OPENSC=""
-for p in /usr/lib/*/pkcs11/opensc-pkcs11.so /usr/lib64/pkcs11/opensc-pkcs11.so /usr/lib/pkcs11/opensc-pkcs11.so; do
-  [ -f "$p" ] && { OPENSC="$p"; break; }
+# Ubuntu 26.04+ ships the module at /usr/lib/<arch>/opensc-pkcs11.so (pkcs11/ holds only a relative symlink);
+# older Ubuntu/Mint use /usr/lib/<arch>/pkcs11/. Try the real library first and resolve symlinks.
+for p in /usr/lib/*/opensc-pkcs11.so /usr/lib/*/pkcs11/opensc-pkcs11.so /usr/lib64/pkcs11/opensc-pkcs11.so /usr/lib/pkcs11/opensc-pkcs11.so; do
+  [ -f "$p" ] && { OPENSC="$(readlink -f "$p")"; break; }
 done
 [ -n "$OPENSC" ] || die "Could not find opensc-pkcs11.so"
-if modutil -dbdir "$DB" -list 2>/dev/null | grep -q "$OPENSC"; then
+# Already registered under the name "OpenSC" or this library path (any path form)? Then leave it alone.
+if modutil -dbdir "$DB" -list 2>/dev/null | grep -Eq "^ *[0-9]+\. OpenSC\$|library name: .*opensc-pkcs11\.so"; then
   echo "  OpenSC module already registered"
 else
   modutil -dbdir "$DB" -add "OpenSC" -libfile "$OPENSC" -force >/dev/null
   echo "  OpenSC module registered"
 fi
 
-# --- 5. Connections and shortcuts ---------------------------------------------
+# --- 5. Check the CAC reader and card, then get the connection files ---------------
+# Downloading the connection files from the NVD web client needs a working CAC in Chrome, so this
+# comes last: everything the CAC needs is already set up by now.
+if [ "${#RDPS[@]}" -eq 0 ]; then
+  say "Checking your CAC reader and card"
+  "${SUDO[@]}" systemctl restart pcscd.socket pcscd.service >/dev/null 2>&1 || true
+  have_reader() { opensc-tool -l 2>/dev/null | grep -q '^[0-9]'; }
+  have_card()   { opensc-tool -l 2>/dev/null | grep -Eq '^[0-9]+ +Yes'; }
+  # wait_for CHECK WHAT MESSAGE: poll (GUI), or prompt in a terminal; "s" skips.
+  wait_for() {
+    local check="$1" what="$2" msg="$3" ans=""
+    until "$check"; do
+      if [ -n "$GUI" ]; then
+        ui "NEED $what"; ans=""; read -r -t 2 ans || true
+        [ "$ans" = s ] && break
+      elif [ -t 0 ]; then
+        read -r -p "  $msg Press Enter to check again, or type s to skip: " ans || break
+        [ "$ans" = s ] && break
+      else break; fi
+    done
+    ui CLEAR
+  }
+  wait_for have_reader reader "No card reader found. Plug in your CAC reader."
+  wait_for have_card card "No CAC found in the reader. Insert your CAC."
+  if have_reader && have_card; then
+    echo "  CAC reader and card detected."
+  else
+    warn "Could not detect a CAC reader with a card. Check the connection (try: pcsc_scan) before signing in."
+  fi
+
+  if ! command -v google-chrome >/dev/null; then
+    warn "Google Chrome is not installed. Install it from https://www.google.com/chrome and make it your default browser."
+    have_chrome() { command -v google-chrome >/dev/null; }
+    wait_for have_chrome chrome "Install Google Chrome (https://www.google.com/chrome)."
+  fi
+
+  say "Download your NVD connection file(s)"
+  ui "DOWNLOAD $NVD_URL"
+  if [ -z "$GUI" ]; then
+    cat <<EOF2
+  1. Quit Chrome completely and reopen it (it loads the CAC module at startup), with your CAC inserted.
+  2. Open the NVD web client:  $NVD_URL
+     (use the link NVD gave you if it is different)
+  3. Sign in: enter your username, then pick the PIV Authentication certificate and your PIN.
+  4. Click the gear icon, under "Resources launch method" choose "Download the RDP file",
+     then click each desktop you use (for example East and West). Each click downloads a file.
+  Waiting for .rdp / .rdpw files in:
+     $KIT   and   $HOME/Downloads
+  When you have them all, press Enter. Already have the files somewhere else? Type the full path to a
+  file and press Enter to add it. (Type s + Enter to skip and add them later with:
+  nautilus-add-connection FILE.rdp)
+EOF2
+    [ ! -t 0 ] || xdg-open "$NVD_URL" >/dev/null 2>&1 || true
+  fi
+  seen=-1; idle=0; found=(); EXTRA=()   # EXTRA: files the user picked by hand (GUI Browse, or a path typed in a terminal)
+  while :; do
+    found=()
+    while IFS= read -r -d '' f; do found+=("$f"); done < <(
+      find "$KIT" "$HOME/Downloads" -maxdepth 1 -type f \( -name '*.rdp' -o -name '*.rdpw' \) \
+        -newermt "@$START_TS" -print0 2>/dev/null)
+    # a file still being downloaded ends in .crdownload, so it is not matched yet
+    total=$(( ${#found[@]} + ${#EXTRA[@]} ))
+    if [ "$total" -ne "$seen" ]; then
+      seen=$total; idle=0; ui "FOUND $seen"
+      [ -n "$GUI" ] || echo "  $seen connection file(s) so far"
+    else idle=$((idle+1)); fi
+    ans=""; rc=0; read -r -t 3 ans || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if [ -f "$ans" ]; then EXTRA+=("$ans"); continue; fi     # a file picked by hand
+      { [ "$ans" = s ] || [ "$total" -gt 0 ]; } && break
+    elif [ "$rc" -le 128 ]; then sleep 3; fi            # stdin closed: don't spin
+    # unattended (no terminal, no GUI): continue once files stopped arriving
+    if [ -z "$GUI" ] && [ ! -t 0 ] && [ "$total" -gt 0 ] && [ "$idle" -ge 4 ]; then break; fi
+  done
+  RDPS=()
+  if [ "$ans" != s ]; then
+    for f in "${found[@]}" "${EXTRA[@]}"; do
+      case " ${RDPS[*]-} " in *" $f "*) ;; *) RDPS+=("$f") ;; esac   # skip duplicates
+    done
+  fi
+fi
+# Connection files already in connections/ (or from --rdp) are always included
+for f in "$KIT"/connections/*.rdp "$KIT"/connections/*.rdpw; do [ -f "$f" ] && RDPS+=("$f"); done
+say "Creating desktop shortcuts"
 if [ "${#RDPS[@]}" -gt 0 ]; then
-  say "Installing connections and shortcuts"
   /usr/local/bin/nautilus-add-connection "${RDPS[@]}"
+else
+  warn "No connection files yet. Later run: nautilus-add-connection FILE.rdp"
 fi
 
 # --- Done -----------------------------------------------------------------
-say "Done"
+printf '\n\033[1m==> Done\033[0m\n'
 browser="$(xdg-settings get default-web-browser 2>/dev/null || true)"
 case "$browser" in
   google-chrome*) ;;
@@ -181,3 +292,4 @@ Next steps:
 Troubleshooting: run from a terminal to see errors, e.g.
   nautilus-connect ~/Documents/Nautilus/<file>.rdp
 EOF
+ui DONE

@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Graphical front end for install.sh (Nautilus NVD for Linux).
+
+Runs install.sh with NAUTILUS_GUI=1 and turns its "##" progress lines into a friendly window:
+a step list, a progress bar, prompts (plug in the reader, download the connection files) and a
+password dialog for sudo (gui/askpass). Usage: nautilus-installer /path/to/install.sh [install.sh args]
+"""
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOG = os.path.expanduser("~/nautilus-nvd-install.log")
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+NINJA = re.compile(r"^\[(\d+)/(\d+)\]")
+
+NEED_TEXT = {
+    "reader": ("Plug in your CAC reader",
+               "Connect the smart card reader to a USB port. This window continues by itself."),
+    "card": ("Insert your CAC",
+             "Put your CAC in the reader with the chip facing the right way. This window continues by itself."),
+    "chrome": ("Install Google Chrome",
+               "Download it from https://www.google.com/chrome and install it. This window continues by itself."),
+}
+
+
+class App(Gtk.Window):
+    def __init__(self, argv):
+        super().__init__(title="Nautilus NVD Setup")
+        self.argv = argv
+        self.proc = None
+        self.steps = []          # (glyph label, title label)
+        self.cur = 0
+        self.sub = 0.0
+        self.done = False
+        self.url = ""
+        self.last_error = ""
+        self.logf = open(LOG, "w")
+        self.set_default_size(560, 640)
+        self.set_border_width(18)
+        self.connect("delete-event", self.on_close)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.add(box)
+        t = Gtk.Label(xalign=0)
+        t.set_markup("<span size='x-large' weight='bold'>Nautilus NVD Setup</span>")
+        box.pack_start(t, False, False, 0)
+        s = Gtk.Label(xalign=0, wrap=True,
+                      label="Setting up your computer to use your CAC with Navy Nautilus Virtual Desktop. "
+                            "This takes several minutes; you can leave this window open.")
+        box.pack_start(s, False, False, 0)
+
+        self.grid = Gtk.Grid(row_spacing=6, column_spacing=10)
+        box.pack_start(self.grid, False, False, 6)
+
+        self.bar = Gtk.ProgressBar(show_text=True)
+        box.pack_start(self.bar, False, False, 0)
+        self.status = Gtk.Label(xalign=0, wrap=True, label="Starting...")
+        box.pack_start(self.status, False, False, 0)
+
+        self.stack = Gtk.Stack()
+        box.pack_start(self.stack, False, False, 6)
+        self.stack.add_named(Gtk.Box(), "none")
+        # prompt panel
+        self.need_title = Gtk.Label(xalign=0)
+        self.need_body = Gtk.Label(xalign=0, wrap=True)
+        p = self.panel()
+        p.pack_start(self.need_title, False, False, 0)
+        p.pack_start(self.need_body, False, False, 0)
+        skip = Gtk.Button(label="Skip this check")
+        skip.set_halign(Gtk.Align.START)
+        skip.connect("clicked", lambda *_: self.send("s"))
+        p.pack_start(skip, False, False, 0)
+        self.stack.add_named(p, "need")
+        # download panel
+        p = self.panel()
+        h = Gtk.Label(xalign=0)
+        h.set_markup("<b>Download your NVD connection files</b>")
+        p.pack_start(h, False, False, 0)
+        steps = Gtk.Label(xalign=0, wrap=True, label=(
+            "1. Quit Chrome completely, then reopen it with your CAC inserted.\n"
+            "2. Click the button below to open the NVD web client in Chrome.\n"
+            "3. Sign in: enter your username, then choose the PIV Authentication certificate and your PIN.\n"
+            "4. Click the gear icon; under \"Resources launch method\" choose \"Download the RDP file\".\n"
+            "5. Click each desktop you use (for example East and West). Each click downloads a file.\n"
+            "This window notices the files in ~/Downloads automatically."))
+        p.pack_start(steps, False, False, 0)
+        self.open_btn = Gtk.Button(label="Open the NVD web client")
+        self.open_btn.set_halign(Gtk.Align.START)
+        self.open_btn.connect("clicked", self.open_url)
+        p.pack_start(self.open_btn, False, False, 0)
+        self.found = Gtk.Label(xalign=0, label="No files downloaded yet.")
+        p.pack_start(self.found, False, False, 0)
+        browse = Gtk.Button(label="Already have the files? Browse...")
+        browse.set_halign(Gtk.Align.START)
+        browse.connect("clicked", self.browse)
+        p.pack_start(browse, False, False, 0)
+        row = Gtk.Box(spacing=8)
+        self.cont = Gtk.Button(label="I've downloaded them all - continue")
+        self.cont.set_sensitive(False)
+        self.cont.get_style_context().add_class("suggested-action")
+        self.cont.connect("clicked", lambda *_: self.send(""))
+        later = Gtk.Button(label="Skip for now")
+        later.connect("clicked", lambda *_: self.send("s"))
+        row.pack_start(self.cont, False, False, 0)
+        row.pack_start(later, False, False, 0)
+        p.pack_start(row, False, False, 0)
+        self.stack.add_named(p, "download")
+        # finished / failed panels
+        self.end_title = Gtk.Label(xalign=0)
+        self.end_body = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        p = self.panel()
+        p.pack_start(self.end_title, False, False, 0)
+        p.pack_start(self.end_body, False, False, 0)
+        close = Gtk.Button(label="Close")
+        close.set_halign(Gtk.Align.START)
+        close.connect("clicked", lambda *_: self.destroy())
+        p.pack_start(close, False, False, 0)
+        self.stack.add_named(p, "end")
+
+        ex = Gtk.Expander(label="Show technical details")
+        sw = Gtk.ScrolledWindow(min_content_height=160, vexpand=True)
+        self.tv = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        sw.add(self.tv)
+        ex.add(sw)
+        box.pack_start(ex, True, True, 0)
+        self.show_all()
+        self.stack.set_visible_child_name("none")
+        self.start()
+
+    def panel(self):
+        return Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=4)
+
+    # ---- process ----
+    def start(self):
+        script = os.environ.get("NAUTILUS_INSTALL_SCRIPT", self.argv[0])
+        env = dict(os.environ, NAUTILUS_GUI="1")
+        self.proc = subprocess.Popen(["bash", script] + self.argv[1:], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                                     start_new_session=True)
+        threading.Thread(target=self.reader, daemon=True).start()
+
+    def reader(self):
+        for raw in self.proc.stdout:
+            line = ANSI.sub("", raw.decode("utf-8", "replace")).rstrip("\r\n")
+            GLib.idle_add(self.on_line, line)
+        rc = self.proc.wait()
+        GLib.idle_add(self.on_exit, rc)
+
+    def send(self, text):
+        try:
+            self.proc.stdin.write((text + "\n").encode())
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        self.stack.set_visible_child_name("none")
+
+    # ---- events ----
+    def on_line(self, line):
+        if line.startswith("##"):
+            self.event(line[2:])
+            return False
+        self.logf.write(line + "\n")
+        self.logf.flush()
+        buf = self.tv.get_buffer()
+        buf.insert(buf.get_end_iter(), line + "\n")
+        self.tv.scroll_to_mark(buf.get_insert(), 0, False, 0, 0)
+        if line.startswith("ERROR:"):
+            self.last_error = line[6:].strip()
+        m = NINJA.match(line)
+        if m and int(m.group(2)):
+            self.sub = int(m.group(1)) / int(m.group(2))
+            self.status.set_text("Building the remote desktop client: %s of %s" % m.groups())
+            self.refresh()
+        return False
+
+    def event(self, ev):
+        kind, _, arg = ev.partition(" ")
+        if kind == "PLAN":
+            for i, title in enumerate(arg.split("|")):
+                g = Gtk.Label(label="○", xalign=0.5)
+                l = Gtk.Label(label=title, xalign=0)
+                self.grid.attach(g, 0, i, 1, 1)
+                self.grid.attach(l, 1, i, 1, 1)
+                self.steps.append((g, l))
+            self.grid.show_all()
+        elif kind == "STEP":
+            self.cur = int(arg)
+            self.sub = 0.0
+            self.stack.set_visible_child_name("none")
+            for i, (g, l) in enumerate(self.steps, 1):
+                g.set_text("✓" if i < self.cur else ("▶" if i == self.cur else "○"))
+                l.set_markup("<b>%s</b>" % GLib.markup_escape_text(l.get_text()) if i == self.cur
+                             else GLib.markup_escape_text(l.get_text()))
+            if 0 < self.cur <= len(self.steps):
+                self.status.set_text(self.steps[self.cur - 1][1].get_text() + "...")
+            self.refresh()
+        elif kind == "NEED":
+            title, body = NEED_TEXT.get(arg, (arg, ""))
+            self.need_title.set_markup("<b>%s</b>" % GLib.markup_escape_text(title))
+            self.need_body.set_text(body)
+            self.stack.set_visible_child_name("need")
+        elif kind == "CLEAR":
+            self.stack.set_visible_child_name("none")
+        elif kind == "DOWNLOAD":
+            self.url = arg
+            self.stack.set_visible_child_name("download")
+        elif kind == "FOUND":
+            n = int(arg)
+            self.found.set_text("No files downloaded yet." if n == 0 else
+                                "%d connection file%s found." % (n, "" if n == 1 else "s"))
+            self.cont.set_sensitive(n > 0)
+        elif kind == "DONE":
+            self.done = True
+
+    def refresh(self):
+        n = max(len(self.steps), 1)
+        frac = min(((self.cur - 1) + self.sub) / n, 1.0) if self.cur else 0.0
+        self.bar.set_fraction(max(frac, 0.0))
+        self.bar.set_text("Step %d of %d" % (self.cur, n) if self.cur else "")
+
+    def browse(self, *_):
+        d = Gtk.FileChooserDialog(title="Select your NVD connection files", transient_for=self,
+                                  action=Gtk.FileChooserAction.OPEN)
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
+        d.set_select_multiple(True)
+        f = Gtk.FileFilter()
+        f.set_name("RDP connection files (*.rdp, *.rdpw)")
+        f.add_pattern("*.rdp")
+        f.add_pattern("*.rdpw")
+        d.add_filter(f)
+        dl = os.path.expanduser("~/Downloads")
+        d.set_current_folder(dl if os.path.isdir(dl) else os.path.expanduser("~"))
+        if d.run() == Gtk.ResponseType.OK:
+            for path in d.get_filenames():
+                try:
+                    self.proc.stdin.write((path + "\n").encode())
+                    self.proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    break
+        d.destroy()
+
+    def open_url(self, *_):
+        if self.url:
+            subprocess.Popen(["xdg-open", self.url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def on_exit(self, rc):
+        self.stack.set_visible_child_name("end")
+        if rc == 0 and self.done:
+            for g, _ in self.steps:
+                g.set_text("✓")
+            self.bar.set_fraction(1.0)
+            self.bar.set_text("Finished")
+            self.status.set_text("")
+            self.end_title.set_markup("<span size='large' weight='bold'>All set!</span>")
+            self.end_body.set_text(
+                "Quit Chrome completely and reopen it, insert your CAC, then double-click a "
+                "\"Nautilus\" shortcut on your desktop. On the Microsoft page enter your username "
+                "first; Chrome then offers your PIV Authentication certificate. When Chrome asks to "
+                "open \"FreeRDP AAD redirect handler\", click Open.")
+        else:
+            self.status.set_text("")
+            self.end_title.set_markup("<span size='large' weight='bold'>Setup stopped</span>")
+            self.end_body.set_text(
+                (self.last_error + "\n\n" if self.last_error else "") +
+                "Something went wrong. Open \"Show technical details\" below, or see the log:\n" + LOG +
+                "\nYou can run setup again; it picks up where it left off.")
+        return False
+
+    def on_close(self, *_):
+        if self.proc and self.proc.poll() is None:
+            d = Gtk.MessageDialog(transient_for=self, message_type=Gtk.MessageType.QUESTION,
+                                  buttons=Gtk.ButtonsType.YES_NO, text="Setup is still running. Stop it?")
+            r = d.run()
+            d.destroy()
+            if r != Gtk.ResponseType.YES:
+                return True
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        Gtk.main_quit()
+        return False
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit("usage: nautilus-installer /path/to/install.sh [args]")
+    App(sys.argv[1:])
+    Gtk.main()

@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+# Password prompt for sudo (SUDO_ASKPASS), used by the graphical installer.
+import sys
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+
+d = Gtk.MessageDialog(message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.OK_CANCEL,
+                      text="Enter your password")
+d.format_secondary_text("The installer needs your computer password to install software.")
+d.set_title("Nautilus NVD Setup")
+entry = Gtk.Entry(visibility=False, activates_default=True)
+entry.set_placeholder_text("Password")
+d.get_message_area().pack_start(entry, False, False, 6)
+d.set_default_response(Gtk.ResponseType.OK)
+d.show_all()
+if d.run() == Gtk.ResponseType.OK:
+    sys.stdout.write(entry.get_text() + "\n")
+    sys.exit(0)
+sys.exit(1)

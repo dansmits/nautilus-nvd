@@ -9,27 +9,32 @@ with the options NVD needs, and wires up Chrome, the DoD certificates and deskto
 ## Before you start
 - A CAC reader plugged in, with your CAC inserted
 - **Google Chrome** installed and set as the default browser (https://www.google.com/chrome)
-- Your NVD connection file(s) (`.rdp`). They identify your organization's host pool, so this repo
-  does not include them. See **Get your NVD connection file** below.
 
-## Get your NVD connection file
-1. In Chrome, open the NVD web client. For Azure Government, the AVD web client is at
-   `https://rdweb.wvd.azure.us/arm/webclient/`. If NVD gave you a different link, use that one.
-2. Sign in with your CAC.
-3. Click the gear icon, then under *Resources launch method*, choose **Download the RDP file**.
-4. Click your NVD desktop. A `.rdp` file downloads (usually to `~/Downloads`).
-
-Repeat for each desktop you use (for example East and West). The installer also accepts files
-ending in `.rdpw`.
+You do **not** need your NVD connection files (`.rdp`/`.rdpw`) up front. Downloading them needs a
+working CAC in Chrome, so the installer sets that up first, then walks you through it.
 
 ## Install
 ```bash
 git clone https://github.com/dansmits/nautilus-nvd.git
 cd nautilus-nvd
-./install.sh --rdp ~/Downloads/YourConnection.rdp
+./install.sh
 ```
-Run it as your normal user (not `sudo`); it asks for your password when needed. It takes several
+Run it as your normal user (not `sudo`). On a desktop it opens a setup window with a progress bar and
+asks for your password in a dialog (`./install.sh --text` runs it in the terminal instead). It takes several
 minutes because FreeRDP is compiled on your machine. It is safe to re-run.
+
+The installer then:
+1. sets up the smart card service, DoD certificates, Chrome's certificate database and FreeRDP;
+2. checks that it can see your CAC reader and card (and waits while you plug them in);
+3. shows the NVD web client link (`https://rdweb.wvd.azure.us/arm/webclient/`, or use the one NVD gave
+   you) and tells you how to download the RDP file(s): sign in with your CAC, click the gear icon, under
+   *Resources launch method* choose **Download the RDP file**, then click each desktop (for example East
+   and West);
+4. waits for the `.rdp`/`.rdpw` files to appear in the script's folder or `~/Downloads`, then creates a
+   desktop shortcut for each.
+
+If you already have the files, click **Browse...** in the setup window (or type a file's path in the
+terminal installer) to add them. You can also pass files yourself: `./install.sh --rdp "FILE.rdp" "OTHER.rdp"` (quote names with spaces).
 
 Then quit Chrome completely, reopen it, insert your CAC and double-click the **Nautilus** shortcut on
 your desktop. On the Microsoft page enter your username first; Chrome then offers your *PIV
